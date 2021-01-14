@@ -63,16 +63,32 @@ class RockBlock:
         """Send AT command and return response as tuple of lines read."""
         self._uart.reset_input_buffer()
         self._uart.write(str.encode("AT" + cmd + "\r"))
-
+        print(">>>" + "AT" + cmd + "\r")
         resp = []
         line = self._uart.readline()
+        print("1<<<" + str(line))
+        if line is None:
+            print("none")
+        else:
+            print("not none")
+        while line is None:
+            line = self._uart.readline()
+            print("retry<<<" + str(line))
+            time.sleep(0.1)
+        print("line::: " + str(line))
         resp.append(line)
+        
         while not any(EOM in line for EOM in (b"OK\r\n", b"ERROR\r\n")):
             line = self._uart.readline()
+            print("<<<" + str(line))
+            while line is None:
+                line = self._uart.readline()
+                print("retry<<<" + str(line))
+                time.sleep(0.1)
             resp.append(line)
 
         self._uart.reset_input_buffer()
-
+        print("resp:::" + str(resp))
         return tuple(resp)
 
     def reset(self):
@@ -87,33 +103,50 @@ class RockBlock:
     @property
     def data_out(self):
         """The binary data in the outbound buffer."""
+        # this should actuall read the modem's buffer?
         return self._buf_out
 
     @data_out.setter
     def data_out(self, buf):
+        print("data_out")
+        print(buf)
         if buf is None:
+            print("clear buffer")
             # clear the buffer
             resp = self._uart_xfer("+SBDD0")
             resp = int(resp[1].strip().decode())
             if resp == 1:
                 raise RuntimeError("Error clearing buffer.")
         else:
+            print("set buffer")
             # set the buffer
             if len(buf) > 340:
+                print("length error")
                 raise RuntimeError("Maximum length of 340 bytes.")
-            self._uart.write(str.encode("AT+SBDWB={}\r".format(len(buf))))
+            #why use ._uart and not uart_xfer
+            line = str.encode("AT+SBDWB={}\r".format(len(buf)))
+            print(">>>" + str(line))
+            self._uart.write(line)
             line = self._uart.readline()
+            print("<<<" + str(line))
             while line != b"READY\r\n":
                 line = self._uart.readline()
+                print("<<<" + str(line))
             # binary data plus checksum
-            self._uart.write(buf + struct.pack(">H", sum(buf)))
+            line = buf + struct.pack(">H", sum(buf))
+            print(">>>" + str(line))
+            self._uart.write(line)
             line = self._uart.readline()  # blank line
+            print("<<<" + str(line))
             line = self._uart.readline()  # status response
+            print("<<<" + str(line))
             resp = int(line)
+            print("response: " + str(resp))
             if resp != 0:
                 raise RuntimeError("Write error", resp)
             # seems to want some time to digest
             time.sleep(0.1)
+        print("end data_out setter")
         self._buf_out = buf
 
     @property
@@ -173,6 +206,7 @@ class RockBlock:
 
     def satellite_transfer(self, location=None):
         """Initiate a Short Burst Data transfer with satellites."""
+        
         status = (None,) * 6
         if location:
             resp = self._uart_xfer("+SBDIX=" + location)
@@ -181,7 +215,7 @@ class RockBlock:
         if resp[-1].strip().decode() == "OK":
             status = resp[-3].strip().decode().split(":")[1]
             status = [int(s) for s in status.split(",")]
-            if status[0] <= 8:
+            if status[0] <= 4: # this must be change from 8 to 4 see at command doc
                 # outgoing message sent successfully
                 self.data_out = None
         return tuple(status)
@@ -420,3 +454,43 @@ class RockBlock:
             time_now_unix = iridium_epoch_unix + int(secs_since_epoch)
             return time.localtime(time_now_unix)
         return None
+
+    @property
+    def energy_monitor(self):
+        """Report the current accumulated energy usage estimate in microamp hours.
+
+        Returns an estimate of the charge taken from the +5V supply to the modem,
+        in microamp hours (uAh). This is represented internally as a 26-bit unsigned number,
+        so in principle will rollover to zero after approx. 67Ah (in practice this is usually
+        greater than battery life, if battery-powered).
+
+        The accumulator value is set to zero on a power-cycle or on a watchdog reset.
+        Note that while +5V power is supplied to the Data Module but the module is powered off
+        by its ON/OFF control line, it will still be consuming up to a few tens of microamps,
+        and this current drain will not be estimated in the +GEMON report.
+
+        The setter will preset the energy monitor accumulator to value n (typically, <n> would
+        be specified as 0, to clear the accumulator).
+
+        Note: Call Processor/BOOT Version: TA16005 is known to not support the AT+GEMON energy
+        monitor command. It is however known to work on TA19002 (newer) and TA12003 (older).
+        You may use the revision function to determine which version you have. Function will
+        return None if modem cannot retrieve the accumulated energy usage estimate.
+
+        Returns
+        int
+        """
+
+        resp = self._uart_xfer("+GEMON")
+        if resp[-1].strip().decode() == "OK":
+            return int(resp[1].strip().decode().split(":")[1])
+        return None
+
+    @energy_monitor.setter
+    def energy_monitor(self, value):
+        if 0 <= value <= 67108863:  # 0 to 2^26 - 1
+            resp = self._uart_xfer("+GEMON=" + str(value))
+            if resp[-1].strip().decode() == "OK":
+                return True
+            raise RuntimeError("Error setting energy monitor accumulator.")
+        raise ValueError("Value must be between 0 and 67108863 (2^26 - 1).")
