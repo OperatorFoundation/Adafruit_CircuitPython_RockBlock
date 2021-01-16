@@ -65,28 +65,26 @@ class RockBlock:
         self._uart.write(str.encode("AT" + cmd + "\r"))
         print(">>>" + "AT" + cmd + "\r")
         resp = []
+        start_time = time.monotonic()
         line = self._uart.readline()
-        print("1<<<" + str(line))
-        if line is None:
-            print("none")
-        else:
-            print("not none")
-        while line is None:
-            line = self._uart.readline()
-            print("retry<<<" + str(line))
-            time.sleep(0.1)
-        print("line::: " + str(line))
+        print("<<<" + str(line))
         resp.append(line)
         
         while not any(EOM in line for EOM in (b"OK\r\n", b"ERROR\r\n")):
+            start_time = time.monotonic()
             line = self._uart.readline()
             print("<<<" + str(line))
-            while line is None:
+            #instead of this while loop, the UART timout could be set to 9 seconds. 
+            #9 seconds is based on timeout measured while doing SBDIX with 
+            #no network availabilty this may need to be adjusted to a larger value, 
+            #SBDIX session timouts due to other problems may be longer
+            #this could also be a parameter for the _uart_xfer to handle 
+            #timout variations between different commands
+            while (line is None) and ((time.monotonic() - start_time) < 9):
+                print(time.monotonic() - start_time)
                 line = self._uart.readline()
-                print("retry<<<" + str(line))
-                time.sleep(0.1)
             resp.append(line)
-
+        print( time.monotonic() - start_time)
         self._uart.reset_input_buffer()
         print("resp:::" + str(resp))
         return tuple(resp)
